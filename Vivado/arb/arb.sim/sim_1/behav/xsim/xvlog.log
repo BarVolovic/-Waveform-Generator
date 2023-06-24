@@ -1,0 +1,4 @@
+INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Project/modules/clk_div.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module clk_div
+INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Project/modules/clk_div_tb.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module clk_div_tb
