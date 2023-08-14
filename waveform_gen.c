@@ -7,20 +7,22 @@
 #include <fcntl.h>
 #include <stdbool.h>
 
-#define MAX_AMPLITUDE 1
-#define MIN_AMPLITUDE -1
-#define MAX_SAMPLES   2000
-#define MIN_SAMPLES   3
-#define MAX_FREQUENCY 25000000
-#define MIN_FREQUENCY 1
-#define REF_CLK_FREQ  125000000
-#define MAX_DUTY_CYCLE 100
-#define MIN_DUTY_CYCLE 0
-#define MAX_LINE_LENGTH 256
+#define MAX_AMPLITUDE     1
+#define MIN_AMPLITUDE     -1
+#define MAX_SAMPLES       2000
+#define MIN_SAMPLES       3
+#define MAX_FREQUENCY     25000000
+#define MIN_FREQUENCY     1
+#define REF_CLK_FREQ      125000000
+#define DDS_FREQ_DEVISOR  1
+#define MAX_DUTY_CYCLE    100
+#define MIN_DUTY_CYCLE    0
+#define MAX_LINE_LENGTH   256
 #define FILE_PATH_MAX_LEN 256
 
 enum implementation { ARB=1, DDS=2 };
 enum waveform_type  { SINE=1, SQUARE=2, SAWTOOTH=3, TRIANGLE=4, ARBIT=5 };
+enum user_input     { YES=1, NO=2 };
 
 typedef struct _waveform_params {
 	int   implementation;
@@ -53,6 +55,7 @@ void get_implementation(waveform_params *wf_params) {
         if (!is_valid_implementation)
             printf("Invalid waveform implementation. Let's try again.\n\n");
     } while (!is_valid_implementation);
+    
 }
 
 
@@ -130,20 +133,22 @@ void get_amplitude(waveform_params *wf_params) {
 }
 
 // Check if the selected frequency is valid
-bool get_is_valid_frequency(int frequency) {
-    return (frequency <= MAX_FREQUENCY && frequency >= MIN_FREQUENCY);
+bool get_is_valid_frequency(int frequency, float min_frequency) {
+    return (frequency <= MAX_FREQUENCY && frequency >= min_frequency);
 }
 
 // Get the waveform frequency from the user
 void get_frequency(waveform_params *wf_params) {
     bool is_valid_frequency = false;
+    float dds_base_freq = REF_CLK_FREQ / MAX_SAMPLES;
+    float min_frequency = (wf_params->implementation == DDS) ? dds_base_freq : MIN_FREQUENCY;
 
     do {
         printf("Frequency [Hz]:\n");
         scanf("%f", &(wf_params->frequency));
-        is_valid_frequency = get_is_valid_frequency(wf_params->frequency);
+        is_valid_frequency = get_is_valid_frequency(wf_params->frequency, min_frequency);
         if (!is_valid_frequency)
-            printf("Invalid waveform frequency. Frequency should be in the range of [%d..%d] [Hz].\n\n", MIN_FREQUENCY, MAX_FREQUENCY);
+            printf("Invalid waveform frequency. Frequency should be in the range of [%f..%d] [Hz].\n\n", min_frequency, MAX_FREQUENCY);
     } while (!is_valid_frequency);
 }
 
@@ -200,9 +205,71 @@ void get_samples(waveform_params *wf_params) {
     }
 }
 
+// Calculate the expected output frequency
+float get_expected_output_frequency(waveform_params *wf_params) {
+    float dds_base_freq = REF_CLK_FREQ / MAX_SAMPLES;
+    
+    switch (wf_params->implementation) {
+        case ARB:
+            return ( (REF_CLK_FREQ / (floor(REF_CLK_FREQ / (wf_params->frequency * wf_params->samples)))) / wf_params->samples );
+        case DDS:
+            return ( dds_base_freq * (floor(wf_params->frequency / dds_base_freq)) );
+    }
+}
+
+// Check if theres an output frequency mismatch
+bool get_output_frequency_match(waveform_params *wf_params) {
+    return (get_expected_output_frequency(wf_params) == wf_params->frequency);
+}
+
+// Fix number of samples for solving an output frequency mismatch
+void fix_samples(waveform_params *wf_params) {
+    while (!get_output_frequency_match(wf_params)) {
+        wf_params->samples -= 1;
+        if (wf_params->samples == MIN_SAMPLES)
+            break;
+    }
+}
+
+// Validate that the output frequency matched the user input
+void validate_output_frequency(waveform_params *wf_params) {
+    bool is_valid_input = false;
+    int user_input, samples_backup = wf_params->samples;
+    
+    if (get_output_frequency_match(wf_params)) {
+        return;
+    } else { // output frequency mismatch
+        printf("Warning: Expected output frequency: %f\n", get_expected_output_frequency(wf_params));
+        if (!((wf_params->waveform_type == ARBIT) || (wf_params->implementation == DDS))) { // dynamic number of samples
+            fix_samples(wf_params);
+            if (wf_params->samples == MIN_SAMPLES) { // samples fix failed
+                printf("Finding alternative number of samples failed\n");
+                wf_params->samples = samples_backup;  
+                return;
+            }
+            printf("Would you like to change the number of samples to %d to solve this mismatch?\n", wf_params->samples);
+            do {
+                printf("[1] Yes\n");
+                printf("[2] No\n");
+                scanf("%d", &user_input);
+                is_valid_input = ((user_input == YES) || (user_input == NO));
+                if (!is_valid_input)
+                    printf("Invalid input. Let's try again.\n\n");
+            } while (!is_valid_input);
+            if (user_input == NO) {
+                wf_params->samples = samples_backup;
+            }
+        }
+    }    
+}
+
 // Get all the waveform parameters from the user
 void get_parameters(waveform_params *wf_params) {
     get_implementation(wf_params);
+    if (wf_params->implementation == DDS) {
+        printf("** Warning: The DDS base frequency is REF_CLK_FREQ / DDS_FREQ_DEVISOR / MAX_SAMPLES = %d[Hz] and therefore it is the minimum frequency and all other possible frequencies are multiples of this base frequency\n", REF_CLK_FREQ / DDS_FREQ_DEVISOR / MAX_SAMPLES);
+        printf("DDS_FREQ_DEVISOR is: %d. For configuring this base frequency, one can change the DDS_FREQ_DEVISOR and the base frequency will be devised accordingly.\n", DDS_FREQ_DEVISOR);
+    }
     get_waveform_type(wf_params);
     if (wf_params->waveform_type == ARBIT) {
         get_arb_samples(wf_params);
@@ -220,6 +287,7 @@ void get_parameters(waveform_params *wf_params) {
     if (wf_params->waveform_type != ARBIT) {
         get_samples(wf_params);
     }
+    validate_output_frequency(wf_params);
 }
 
 /* Sample calculation functions */
@@ -324,7 +392,7 @@ float get_curr_sample(waveform_params *wf_params, int i) {
 // store the waveform parameters and samples in the bram.
 void generate_waveform(waveform_params *wf_params) {
     int i, fd, temp_int, freq_devisor, phase_acc_const;
-    float temp_float, dds_base_freq = REF_CLK_FREQ / MAX_SAMPLES;
+    float temp_float, dds_base_freq = REF_CLK_FREQ / DDS_FREQ_DEVISOR / MAX_SAMPLES;
     int stop = 0;
     float sample_rate = wf_params->samples * wf_params->frequency;
     void *cfg;
@@ -337,11 +405,11 @@ void generate_waveform(waveform_params *wf_params) {
     cfg = mmap(NULL, 2 * sysconf(_SC_PAGESIZE), /* map the memory */
                PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x40000000);
 
-    freq_devisor = (wf_params->implementation == DDS) ? 1 : REF_CLK_FREQ / (int)sample_rate;
+    freq_devisor = (wf_params->implementation == DDS) ? DDS_FREQ_DEVISOR : REF_CLK_FREQ / (int)sample_rate;
     phase_acc_const = (wf_params->implementation == DDS) ? wf_params->frequency / dds_base_freq : 1;
-    *((uint32_t *)(cfg)) = freq_devisor; //store freq_divisor at 0x40000000
+    *((uint32_t *)(cfg)) = freq_devisor;           // store freq_divisor at 0x40000000
     *((uint32_t *)(cfg + 4)) = wf_params->samples; // store num of samples at 0x40000004
-    *((uint32_t *)(cfg + 8)) = phase_acc_const; // store phase accumaltor at 0x40000004
+    *((uint32_t *)(cfg + 8)) = phase_acc_const;    // store phase accumaltor at 0x40000004
 
     for (i = 0; i < wf_params->samples; i++) {
         // Calculate the current sample value and convert it to fixed-point
